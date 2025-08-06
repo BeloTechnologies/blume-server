@@ -1,6 +1,7 @@
 package socket
 
 import (
+	"blume-server/game"
 	"net/http"
 	"sync"
 
@@ -18,14 +19,16 @@ var upgrader = websocket.Upgrader{
 type Server struct {
 	Clients   map[string]*websocket.Conn
 	Positions map[string]string
+	GameState *game.GameState
 	mu        sync.Mutex
 }
 
-func NewServer(logger *zap.Logger) *Server {
+func NewServer(logger *zap.Logger, gameState *game.GameState) *Server {
 	zapLogger = logger
 	return &Server{
 		Clients:   make(map[string]*websocket.Conn),
 		Positions: make(map[string]string),
+		GameState: gameState,
 	}
 }
 
@@ -55,6 +58,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.Clients[playerID] = conn
+	s.GameState.AddPlayer(&game.Player{ID: playerID})
 	s.mu.Unlock()
 
 	// Send assigned ID
@@ -94,9 +98,11 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clean up on disconnect
+	zapLogger.Info("Client disconnected", zap.String("id", playerID))
 	s.mu.Lock()
 	delete(s.Clients, playerID)
 	delete(s.Positions, playerID)
+	s.GameState.RemovePlayer(playerID)
 	s.mu.Unlock()
 
 	// Notify others that this player left

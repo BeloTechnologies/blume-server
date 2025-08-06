@@ -1,6 +1,7 @@
 package main
 
 import (
+	"blume-server/game"
 	"blume-server/socket"
 	"log"
 
@@ -16,7 +17,7 @@ func main() {
 	}
 	defer zapLogger.Sync() // flushes buffer, if any
 
-	// Init echo
+	// Initialize echo
 	e := echo.New()
 
 	// Echo middleware using zap
@@ -33,8 +34,11 @@ func main() {
 		}
 	})
 
+	// Initialize game state
+	gameState := game.NewGameState()
+
 	// Initialize WebSocket server
-	wsServer := socket.NewServer(zapLogger)
+	wsServer := socket.NewServer(zapLogger, gameState)
 
 	e.GET("/ws", func(c echo.Context) error {
 		wsServer.HandleWebSocket(c.Response().Writer, c.Request())
