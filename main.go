@@ -1,98 +1,51 @@
 package main
 
 import (
+	"blume-server/socket"
 	"log"
-	"net/http"
-	"sync"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
+	"github.com/labstack/echo/v4"
+	"go.uber.org/zap"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
-var clients = make(map[string]*websocket.Conn)
-var positions = make(map[string]string)
-var mu sync.Mutex
-
-func broadcast(senderID string, message []byte) {
-	mu.Lock()
-	defer mu.Unlock()
-	for id, conn := range clients {
-		if id != senderID {
-			err := conn.WriteMessage(websocket.TextMessage, message)
-			if err != nil {
-				log.Printf("Error sending to client %s: %v", id, err)
-			}
-		}
-	}
-}
-
-func handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println("Error upgrading connection:", err)
-		return
-	}
-	defer conn.Close()
-
-	playerID := uuid.New().String()
-	log.Printf("Client connected: %s", playerID)
-
-	mu.Lock()
-	clients[playerID] = conn
-	mu.Unlock()
-
-	// Send assigned ID
-	err = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"id", "id":"`+playerID+`"}`))
-	if err != nil {
-		log.Println("Error sending ID:", err)
-		return
-	}
-
-	// Send positions of other players to this new client
-	mu.Lock()
-	for id, pos := range positions {
-		if id != playerID {
-			conn.WriteMessage(websocket.TextMessage, []byte(pos))
-		}
-	}
-	mu.Unlock()
-
-	// Handle messages
-	for {
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("Client %s disconnected", playerID)
-			break
-		}
-
-		log.Printf("Received from %s: %s", playerID, message)
-
-		// Save last position if it's a move message
-		if string(message[10:15]) == "move\"" {
-			mu.Lock()
-			positions[playerID] = string(message)
-			mu.Unlock()
-		}
-
-		broadcast(playerID, message)
-	}
-
-	// Clean up on disconnect
-	mu.Lock()
-	delete(clients, playerID)
-	delete(positions, playerID)
-	mu.Unlock()
-
-	// Notify others that this player left
-	leaveMsg := []byte(`{"type":"leave", "id":"` + playerID + `"}`)
-	broadcast(playerID, leaveMsg)
-}
 func main() {
-	http.HandleFunc("/ws", handleWebSocket)
-	log.Println("Starting Blume server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	var err error
+	zapLogger, err := zap.NewDevelopment()
+	if err != nil {
+		log.Fatalf("Cannot initialize zap logger: %v", err)
+	}
+	defer zapLogger.Sync() // flushes buffer, if any
+
+	// Init echo
+	e := echo.New()
+
+	// Echo middleware using zap
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			req := c.Request()
+			res := c.Response()
+			zapLogger.Info("HTTP request",
+				zap.String("method", req.Method),
+				zap.String("uri", req.RequestURI),
+				zap.Int("status", res.Status),
+			)
+			return next(c)
+		}
+	})
+
+	// Initialize WebSocket server
+	wsServer := socket.NewServer(zapLogger)
+
+	e.GET("/ws", func(c echo.Context) error {
+		wsServer.HandleWebSocket(c.Response().Writer, c.Request())
+		return nil
+	})
+
+	zapLogger.Info("Starting server on :8080")
+
+	// Start server
+	if err := e.Start(":8080"); err != nil {
+		zapLogger.Fatal("Failed to start server", zap.Error(err))
+	}
+	zapLogger.Info("Server stopped")
 }
